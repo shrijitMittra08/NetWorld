@@ -117,6 +117,35 @@ class ForecastEngine:
             "latent_state": final["latent_state"],
         }
 
+    def forecast_history(self, graphs: List[Any]) -> List[float]:
+        """Return one attack probability per observed graph snapshot efficiently.
+
+        This avoids re-encoding every prefix of the sequence. The temporal GRU
+        is run once over the complete sequence, then each timestep hidden state
+        is passed through the same world-model rollout used by ``forecast``.
+        This is intended for dashboard evaluation/history, not training.
+        """
+        if not graphs:
+            raise ValueError("No graphs provided")
+
+        embeddings = []
+        for graph in graphs:
+            g = graph.graph if hasattr(graph, "graph") else graph
+            embeddings.append(self.graph_encoder(g))
+
+        sequence = torch.cat(embeddings, dim=0).unsqueeze(0)
+        temporal_outputs, _ = self.temporal_encoder.gru(sequence)
+
+        probabilities: List[float] = []
+        with torch.no_grad():
+            for hidden in temporal_outputs[0]:
+                state = hidden.unsqueeze(0)
+                rollout = self.world_model(state, steps=self.rollout_steps)
+                probability = self.attack_head(rollout[-1])
+                probabilities.append(float(probability.detach().item()))
+
+        return probabilities
+
     def forecast(
         self,
         graphs: List[Any],

@@ -1,0 +1,28 @@
+name: networld
+
+topology:
+  nodes:
+    client:
+      kind: linux
+      image: alpine:3.20
+      exec:
+        - ip addr add 10.10.0.10/24 dev eth1
+        - ip link set eth1 up
+    server:
+      kind: linux
+      image: alpine:3.20
+      exec:
+        - ip addr add 10.10.0.20/24 dev eth1
+        - ip addr add 10.10.1.20/24 dev eth2
+        - ip link set eth1 up
+        - ip link set eth2 up
+    attacker:
+      kind: linux
+      image: alpine:3.20
+      exec:
+        - ip addr add 10.10.1.50/24 dev eth1
+        - ip link set eth1 up
+
+  links:
+    - endpoints: ["client:eth1", "server:eth1"]
+    - endpoints: ["attacker:eth1", "server:eth2"]

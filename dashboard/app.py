@@ -40,7 +40,11 @@ improvement_log = ImprovementLog(ROOT / "logs" / "improvement_log.json")
 diversion_log = ImmutableDiversionLog(ROOT / "logs" / "diversion.log")
 capture = SessionCapture()
 decoy_manager = DecoyManager()
-forecast_engine = ForecastEngine(rollout_steps=3)
+@st.cache_resource
+def get_forecast_engine():
+    return ForecastEngine(rollout_steps=3)
+
+forecast_engine = get_forecast_engine()
 
 if uploaded is None:
     st.markdown("### How the demo reads")
@@ -55,7 +59,7 @@ with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
     tmp.write(uploaded.getbuffer())
     tmp_path = tmp.name
 
-raw_df = pd.read_csv(tmp_path)
+raw_df = pd.read_csv(tmp_path, low_memory=False)
 canonical_df = extractFeatures(raw_df, source_file=Path(uploaded.name).name, dataset_name="CIC-IDS2018")
 windowed_df = add_time_windows(canonical_df, window_seconds=window_seconds)
 sequence = build_temporal_graphs(windowed_df)
@@ -78,11 +82,10 @@ feature_tensor = torch.tensor(windowed_df[available].fillna(0).iloc[0:1].to_nump
 forecast = forecast_engine.forecast([snap for snap in sequence.snapshots], feature_tensor=feature_tensor, feature_names=available, window_summaries=windowed_df.tail(3).to_dict(orient="records"))
 
 # Evaluation is real-data only; never manufacture a score.
-eval_probs, eval_labels = [], []
-for idx, snap in enumerate(sequence.snapshots):
-    pf = forecast_engine.forecast(sequence.snapshots[:idx+1])
-    eval_probs.append(float(pf["final_attack_probability"]))
-    eval_labels.append(int(snap.metadata.get("label_is_attack", 0)))
+# Run the temporal encoder once for the whole history instead of forecasting
+# every prefix independently (which becomes O(N^2) graph/model work).
+eval_probs = forecast_engine.forecast_history(sequence.snapshots)
+eval_labels = [int(snap.metadata.get("label_is_attack", 0)) for snap in sequence.snapshots]
 evaluation = evaluate_detection([int(p >= .5) for p in eval_probs], eval_labels, probs=eval_probs) if len(set(eval_labels)) > 1 else {}
 
 # Attention / target details
