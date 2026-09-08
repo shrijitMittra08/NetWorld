@@ -1,16 +1,13 @@
 from __future__ import annotations
+from typing import Any, Dict
 
-from typing import Any, Dict, List, Optional
-
-from policy import LearnedPolicy
 
 def update_policy_from_feedback(
-    learned_policy: LearnedPolicy,
+    policy: Any,
     action_index: int,
     reward: float,
-    metadata: Optional[Dict[str, Any]] = None,
+    metadata: Dict[str, Any] | None = None,
 ) -> None:
-    """
-    Feed reward back into the learned policy.
-    """
-    learned_policy.update(action_index=action_index, reward=reward)
+    metadata = metadata or {}
+    state = metadata.get("state", metadata)
+    policy.update(action_index=action_index, reward=reward, state=state)

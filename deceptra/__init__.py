@@ -5,6 +5,7 @@ from .diversion import (
     build_ovs_flow_rule,
     detect_evasion_signals,
     DiversionResult,
+    apply_diversion,
 )
 from .session_capture import SessionCapture, CapturedSession
 from .telemetry import export_one_way_telemetry, TelemetryExport

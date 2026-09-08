@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Sequence
 from .metrics import (
     accuracy,
     precision_recall_f1,
+    auroc,
+    auprc,
     false_positive_rate,
     top_k_accuracy,
     mean_reciprocal_rank,
@@ -36,6 +38,8 @@ def evaluate_detection(
     }
     if probs is not None:
         result["brier_score"] = brier_score(probs, binary_targets)
+        result["auroc"] = auroc(probs, binary_targets)
+        result["auprc"] = auprc(probs, binary_targets)
     return result
 
 def evaluate_ranking(

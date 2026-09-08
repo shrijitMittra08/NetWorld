@@ -98,6 +98,12 @@ def build_temporal_graphs(df: pd.DataFrame) -> TemporalGraphSequence:
         snapshot.metadata["window_row_count"] = int(len(window_df))
         snapshot.metadata["node_count"] = snapshot.graph.number_of_nodes()
         snapshot.metadata["edge_count"] = snapshot.graph.number_of_edges()
+        if "label.is_attack" in window_df.columns:
+            labels = pd.to_numeric(window_df["label.is_attack"], errors="coerce").fillna(0)
+            snapshot.metadata["label_is_attack"] = int(labels.max() > 0)
+        if "label.attack_stage" in window_df.columns:
+            stages = [str(v) for v in window_df["label.attack_stage"].dropna().tolist() if str(v).strip()]
+            snapshot.metadata["attack_stage"] = stages[-1] if stages else "unknown"
 
         sequence.append(snapshot)
 

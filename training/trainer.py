@@ -51,32 +51,34 @@ class Trainer:
             forecast = self.engine.forecast(
                 graphs,
                 current_node_embeddings=current_node_embeddings,
+                detach=False,
             )
-            rollout_preds = []
-            for step_pred in forecast["rollout"]:
-                rollout_preds.append(
-                    {
-                        "attack_probability": torch.tensor([step_pred["attack_probability"]], dtype=torch.float32),
-                        "stage_logits": torch.tensor(step_pred["stage_logits"], dtype=torch.float32),
-                        "target_attention": (
-                            torch.tensor(step_pred["target_attention"], dtype=torch.float32)
-                            if step_pred["target_attention"] is not None
-                            else None
-                        ),
-                    }
-                )
+            rollout_preds = forecast["_rollout_tensors"]
 
-            attack_targets = [torch.tensor([targets.get("attack", 0)], dtype=torch.float32)] * len(rollout_preds)
-            stage_targets = [torch.tensor([targets.get("stage", 0)], dtype=torch.long)] * len(rollout_preds)
+            attack_target = torch.tensor([targets.get("attack", 0)], dtype=torch.float32)
+            stage_target = torch.tensor([targets.get("stage", 0)], dtype=torch.long)
+            attack_targets = [attack_target] * len(rollout_preds)
+            stage_targets = [stage_target] * len(rollout_preds)
             target_indices = None
             if "target_index" in targets:
-                target_indices = [torch.tensor([targets.get("target_index", 0)], dtype=torch.long)] * len(rollout_preds)
+                target_indices = [torch.tensor([int(targets.get("target_index", 0))], dtype=torch.long)] * len(rollout_preds)
+
+            # When future observed windows are available, train the transition model
+            # against their encoded latent states. This makes the rollout a true
+            # predictive world model rather than a classifier wrapper.
+            state_targets = []
+            if len(graphs) > 1:
+                for i in range(len(rollout_preds)):
+                    end = min(len(graphs), i + 2)
+                    observed = self.engine._encode_sequence(graphs[:end])
+                    state_targets.append(observed)
 
             loss = rollout_loss(
                 rollout_preds=rollout_preds,
                 attack_targets=attack_targets,
                 stage_targets=stage_targets,
                 target_indices=target_indices,
+                state_targets=state_targets or None,
             )
             batch_losses.append(loss)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+import subprocess
 
 @dataclass
 class DiversionResult:
@@ -53,6 +54,19 @@ def detect_evasion_signals(session_events: List[Dict[str, Any]]) -> bool:
         if any(marker in text for marker in suspicious_markers):
             return True
     return False
+
+def apply_diversion(result: DiversionResult, execute: bool = False, timeout: int = 5) -> DiversionResult:
+    """Apply generated rules. Dry-run is the default; live actuation is explicit."""
+    if not result.diverted or not result.commands:
+        return result
+    if not execute:
+        result.method = f"{result.method}-dry-run"
+        return result
+    for command in result.commands:
+        subprocess.run(command, shell=True, check=True, timeout=timeout)
+    result.method = f"{result.method}-applied"
+    return result
+
 
 def divert_session(
     source: str,

@@ -1,0 +1,13 @@
+numpy>=1.26
+pandas>=2.0
+networkx>=3.0
+PyYAML>=6.0
+torch>=2.2
+streamlit>=1.35
+pyarrow>=14.0
+# Optional acceleration / richer parsing. The code has dependency-free fallbacks.
+torch-geometric>=2.5
+scapy>=2.5
+pyshark>=0.6
+shap>=0.45
+captum>=0.7

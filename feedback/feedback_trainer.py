@@ -11,6 +11,8 @@ from .sample_manager import SampleManager
 from .drift_monitor import monitor_drift
 from .validation import validate_fresh_decoy_set
 from .policy_feedback import update_policy_from_feedback
+from .relabel import relabel_decoy_sessions
+from .retrain_trigger import evaluate_retrain_trigger
 from .improvement_log import ImprovementLog
 
 @dataclass
@@ -35,6 +37,19 @@ class FeedbackTrainer:
 
     def ingest_feedback_samples(self, samples: List[Dict[str, Any]]) -> int:
         return self.sample_manager.add_many(samples)
+
+    def ingest_decoy_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Automatically label captured decoy activity and decide whether to retrain."""
+        labelled = relabel_decoy_sessions(sessions)
+        rows = labelled.to_dict(orient="records")
+        added = self.ingest_feedback_samples(rows)
+        trigger = evaluate_retrain_trigger(new_decoy_rows=added)
+        return {
+            "labelled_rows": len(rows),
+            "new_rows": added,
+            "trigger": trigger,
+            "samples": rows,
+        }
 
     def retrain(
         self,

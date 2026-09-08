@@ -42,4 +42,6 @@ def aggregate_node_features(df: pd.DataFrame) -> Dict[str, Any]:
         "auth_attempts_sum": safe_sum(df.get("behaviour.auth_attempts", pd.Series(dtype=float))),
         "auth_failures_sum": safe_sum(df.get("behaviour.auth_failures", pd.Series(dtype=float))),
         "avg_duration": safe_mean(df.get("flow.duration", pd.Series(dtype=float))),
+        "connection_attempts_sum": safe_sum(df.get("behaviour.connection_attempts", pd.Series(dtype=float))),
+        "connection_failures_sum": safe_sum(df.get("behaviour.connection_failures", pd.Series(dtype=float))),
     }

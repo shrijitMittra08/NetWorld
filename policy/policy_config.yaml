@@ -2,26 +2,30 @@ thresholds:
   monitor_max_attack_probability: 0.35
   divert_max_attack_probability: 0.75
   isolate_min_attack_probability: 0.75
-
+  high_value_asset_criticality: 4
+  minimum_stage_confidence: 0.50
+  early_stages:
+    - reconnaissance
+    - unknown
+  divert_stages:
+    - lateral movement
+    - credential access
+    - command and control
 weights:
   attack_probability: 0.45
   target_criticality: 0.20
   stage_confidence: 0.10
   soc_load: 0.10
   decoy_capacity: 0.05
-  intel_value: 0.10
-
 intel_value:
   monitor: 0.1
   divert: 0.8
   isolate: 0.3
-
-human_modes:
-  advisory: true
-  semi_autonomous: true
-  autonomous: false
-
 action_cost:
   monitor: 0.05
   divert: 0.25
   isolate: 0.70
+human_modes:
+  advisory: true
+  semi_autonomous: true
+  autonomous: false

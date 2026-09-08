@@ -63,6 +63,60 @@ class ForecastEngine:
         sequence = torch.cat(embeddings, dim=0).unsqueeze(0)
         return self.temporal_encoder(sequence)
 
+    def forecast_tensors(
+        self,
+        graphs: List[Any],
+        current_node_embeddings: torch.Tensor | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Differentiable forecasting path for training.
+    
+        Unlike forecast(), this method never converts tensors to Python
+        scalars/lists and never detaches them from the autograd graph.
+        """
+        if not graphs:
+            raise ValueError("No graphs provided")
+    
+        z = self._encode_sequence(graphs)
+    
+        rollout = self.world_model(
+            z,
+            steps=self.rollout_steps,
+        )
+    
+        rollout_tensors = []
+    
+        for z_step in rollout:
+            attack_probability = self.attack_head(z_step)
+            stage_logits = self.stage_head(z_step)
+    
+            target_attention = None
+    
+            if current_node_embeddings is not None:
+                target_attention = self.target_head(
+                    z_step,
+                    current_node_embeddings,
+                )
+    
+            rollout_tensors.append(
+                {
+                    "attack_probability": attack_probability,
+                    "stage_logits": stage_logits,
+                    "target_attention": target_attention,
+                    "latent_state": z_step,
+                }
+            )
+    
+        final = rollout_tensors[-1]
+    
+        return {
+            "rollout": rollout_tensors,
+            "attack_probability": final["attack_probability"],
+            "stage_logits": final["stage_logits"],
+            "target_attention": final["target_attention"],
+            "latent_state": final["latent_state"],
+        }
+
     def forecast(
         self,
         graphs: List[Any],
@@ -70,6 +124,7 @@ class ForecastEngine:
         feature_tensor: torch.Tensor | None = None,
         feature_names: Optional[List[str]] = None,
         window_summaries: Optional[List[Dict[str, Any]]] = None,
+        detach: bool = True,
     ) -> Dict[str, Any]:
         if not graphs:
             raise ValueError("No graphs provided")
@@ -89,18 +144,24 @@ class ForecastEngine:
             forecasts.append(
                 {
                     "step": step,
-                    "latent_state": z_step.detach().cpu().tolist(),
-                    "attack_probability": float(attack_prob.item()),
-                    "stage_logits": stage_logits.detach().cpu().tolist(),
+                    "latent_state": z_step.detach().cpu().tolist() if detach else z_step,
+                    "attack_probability": float(attack_prob.item()) if detach else attack_prob,
+                    "stage_logits": stage_logits.detach().cpu().tolist() if detach else stage_logits,
                     "target_attention": (
-                        target_attention.detach().cpu().tolist()
-                        if target_attention is not None
-                        else None
+                        (target_attention.detach().cpu().tolist() if detach else target_attention)
+                        if target_attention is not None else None
                     ),
                 }
             )
 
         final = forecasts[-1]
+        if not detach:
+            # Keep differentiable tensors for the trainer; public forecast output stays JSON-safe by default.
+            final["_attack_probability_tensor"] = self.attack_head(rollout[-1])
+            final["_stage_logits_tensor"] = self.stage_head(rollout[-1])
+            final["_latent_tensor"] = rollout[-1]
+            if current_node_embeddings is not None:
+                final["_target_attention_tensor"] = self.target_head(rollout[-1], current_node_embeddings)
 
         feature_attr = {}
         if feature_tensor is not None:
@@ -115,8 +176,18 @@ class ForecastEngine:
         graph_highlight = build_graph_highlight()
         temporal_deltas = explain_temporal_deltas(window_summaries or [])
 
+        explanation_forecast = dict(final)
+        for _k in list(explanation_forecast):
+            if _k.startswith("_"):
+                explanation_forecast.pop(_k, None)
+        if not detach:
+            explanation_forecast["attack_probability"] = float(final["_attack_probability_tensor"].detach().item())
+            explanation_forecast["stage_logits"] = final["_stage_logits_tensor"].detach().cpu().tolist()
+            if "_target_attention_tensor" in final:
+                explanation_forecast["target_attention"] = final["_target_attention_tensor"].detach().cpu().tolist()
+
         explanation = build_explanation(
-            forecast=final,
+            forecast=explanation_forecast,
             feature_attribution=feature_attr,
             graph_highlight=graph_highlight,
             temporal_deltas=temporal_deltas,
@@ -125,10 +196,38 @@ class ForecastEngine:
             },
         )
 
-        return {
+        target_attention = final.get("target_attention")
+        target_score = 0.0
+        likely_target = None
+        if target_attention is not None:
+            flat = target_attention[0] if isinstance(target_attention, list) and target_attention and isinstance(target_attention[0], list) else target_attention
+            if flat:
+                target_score = float(max(flat))
+                likely_target = int(max(range(len(flat)), key=lambda i: flat[i]))
+        stage_logits_public = explanation_forecast.get("stage_logits", [])
+        stage_values = stage_logits_public[0] if stage_logits_public and isinstance(stage_logits_public[0], list) else stage_logits_public
+        predicted_stage = int(max(range(len(stage_values)), key=lambda i: stage_values[i])) if stage_values else None
+
+        result = {
             "rollout": forecasts,
-            "final_attack_probability": final["attack_probability"],
-            "final_stage_logits": final["stage_logits"],
-            "final_target_attention": final["target_attention"],
+            "final_attack_probability": float(final["_attack_probability_tensor"].detach().item()) if not detach else final["attack_probability"],
+            "final_stage_logits": final["_stage_logits_tensor"].detach().cpu().tolist() if not detach else final["stage_logits"],
+            "final_target_attention": (final["_target_attention_tensor"].detach().cpu().tolist() if not detach and "_target_attention_tensor" in final else final["target_attention"]),
             "explanation": explanation,
+            # Backward-compatible aliases consumed by the policy/demo/tests.
+            "attack_probability": float(final["_attack_probability_tensor"].detach().item()) if not detach else final["attack_probability"],
+            "stage_logits": stage_logits_public,
+            "target_score": target_score,
+            "predicted_stage": predicted_stage,
+            "likely_target": likely_target,
+            "_rollout_tensors": [
+                {
+                    "attack_probability": self.attack_head(z_step),
+                    "stage_logits": self.stage_head(z_step),
+                    "target_attention": self.target_head(z_step, current_node_embeddings) if current_node_embeddings is not None else None,
+                    "latent_state": z_step,
+                }
+                for z_step in rollout
+            ] if not detach else None,
         }
+        return result
