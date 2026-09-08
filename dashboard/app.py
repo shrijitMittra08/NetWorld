@@ -76,10 +76,56 @@ with st.expander("Data pipeline details"):
     a.metric("Raw rows", len(raw_df)); b.metric("Temporal windows", len(sequence)); c.metric("Latest graph nodes", latest.graph.number_of_nodes() if latest else 0)
     st.dataframe(canonical_df.head(10), hide_index=True, use_container_width=True)
 
-preferred_features = ["flow.duration","flow.total_fwd_packets","flow.total_bwd_packets","flow.flow_bytes_per_sec","flow.flow_packets_per_sec","packet.ttl_mean","packet.payload_size_mean","behaviour.auth_failures"]
-available = [c for c in preferred_features if c in windowed_df.columns]
-feature_tensor = torch.tensor(windowed_df[available].fillna(0).iloc[0:1].to_numpy(dtype="float32"), dtype=torch.float32) if available else None
-forecast = forecast_engine.forecast([snap for snap in sequence.snapshots], feature_tensor=feature_tensor, feature_names=available, window_summaries=windowed_df.tail(3).to_dict(orient="records"))
+preferred_features = [
+    "flow.duration",
+    "flow.total_fwd_packets",
+    "flow.total_bwd_packets",
+    "flow.flow_bytes_per_sec",
+    "flow.flow_packets_per_sec",
+    "packet.ttl_mean",
+    "packet.payload_size_mean",
+    "behaviour.auth_failures",
+]
+
+available = [
+    c
+    for c in preferred_features
+    if c in windowed_df.columns
+]
+
+feature_tensor = (
+    torch.tensor(
+        windowed_df[
+            available
+        ]
+        .fillna(0)
+        .iloc[0:1]
+        .to_numpy(
+            dtype="float32"
+        ),
+        dtype=torch.float32,
+    )
+    if available
+    else None
+)
+
+# Give the forecasting engine the complete recent telemetry
+# so its fallback stage/target logic can use attack labels,
+# destination IPs and host context.
+window_summaries = (
+    windowed_df
+    .tail(20)
+    .to_dict(
+        orient="records"
+    )
+)
+
+forecast = forecast_engine.forecast(
+    sequence.snapshots,
+    feature_tensor=feature_tensor,
+    feature_names=available,
+    window_summaries=window_summaries,
+)
 
 # Evaluation is real-data only; never manufacture a score.
 # Run the temporal encoder once for the whole history instead of forecasting
