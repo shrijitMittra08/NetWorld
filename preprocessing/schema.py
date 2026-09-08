@@ -10,18 +10,12 @@ class FieldSpec:
     nullable: bool = True
 
 CANONICAL_FIELDS: List[FieldSpec] = [
-    # -------------------------
-    # network.*
-    # -------------------------
     FieldSpec("network.dataset", "string", False),
     FieldSpec("network.source_file", "string", False),
     FieldSpec("network.timestamp", "timestamp", True),
     FieldSpec("network.window_start", "timestamp", True),
     FieldSpec("network.window_end", "timestamp", True),
 
-    # -------------------------
-    # flow.*
-    # -------------------------
     FieldSpec("flow.src_ip", "string", True),
     FieldSpec("flow.dst_ip", "string", True),
     FieldSpec("flow.src_port", "int64", True),
@@ -38,9 +32,6 @@ CANONICAL_FIELDS: List[FieldSpec] = [
     FieldSpec("flow.iat_std", "float64", True),
     FieldSpec("flow.tcp_flags", "string", True),
 
-    # -------------------------
-    # packet.* (CSV-only placeholder)
-    # -------------------------
     FieldSpec("packet.ttl_mean", "float64", True),
     FieldSpec("packet.ttl_var", "float64", True),
     FieldSpec("packet.tcp_window_mean", "float64", True),
@@ -51,9 +42,6 @@ CANONICAL_FIELDS: List[FieldSpec] = [
     FieldSpec("packet.retransmissions", "int64", True),
     FieldSpec("packet.availability", "boolean", False),
 
-    # -------------------------
-    # behaviour.* (CSV-only placeholder)
-    # -------------------------
     FieldSpec("behaviour.new_peers", "int64", True),
     FieldSpec("behaviour.new_destinations", "int64", True),
     FieldSpec("behaviour.unique_dest_ports", "int64", True),
@@ -62,9 +50,6 @@ CANONICAL_FIELDS: List[FieldSpec] = [
     FieldSpec("behaviour.auth_attempts", "int64", True),
     FieldSpec("behaviour.auth_failures", "int64", True),
 
-    # -------------------------
-    # host.* (CSV-only placeholder)
-    # -------------------------
     FieldSpec("host.src_role", "string", True),
     FieldSpec("host.dst_role", "string", True),
     FieldSpec("host.asset_criticality", "int64", True),
@@ -73,9 +58,6 @@ CANONICAL_FIELDS: List[FieldSpec] = [
     FieldSpec("host.src_os", "string", True),
     FieldSpec("host.dst_os", "string", True),
 
-    # -------------------------
-    # label.*
-    # -------------------------
     FieldSpec("label.class", "string", False),
     FieldSpec("label.is_attack", "int64", False),
     FieldSpec("label.attack_type", "string", True),
@@ -88,28 +70,31 @@ CANONICAL_SCHEMA: Dict[str, Dict[str, Any]] = {
     for field in CANONICAL_FIELDS
 }
 
+
 def canonicalFieldNames() -> List[str]:
     return [field.name for field in CANONICAL_FIELDS]
+
 
 def requiredFieldNames() -> List[str]:
     return [field.name for field in CANONICAL_FIELDS if not field.nullable]
 
+
 def optionalFieldNames() -> List[str]:
     return [field.name for field in CANONICAL_FIELDS if field.nullable]
+
 
 def getFieldSpec(name: str) -> FieldSpec:
     for field in CANONICAL_FIELDS:
         if field.name == name:
             return field
-    raise KeyError("Unknown field name: {name}")
+    raise KeyError(f"Unknown field name: {name}")
+
 
 def validateSchemaColumns(columns: List[str]) -> None:
     missing = [name for name in canonicalFieldNames() if name not in columns]
     if missing:
         raise ValueError(f"Missing canonical columns: {missing}")
 
+
 def emptyCanonicalRow() -> Dict[str, Any]:
-    row: Dict[str, Any] = {}
-    for field in CANONICAL_FIELDS:
-        row[field.name] = None
-    return row
+    return {field.name: None for field in CANONICAL_FIELDS}

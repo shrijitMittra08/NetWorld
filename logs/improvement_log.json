@@ -1,0 +1,155 @@
+[
+  {
+    "attack_probability": 0.5322656035423279,
+    "decision": "divert",
+    "approved": true,
+    "reliability": {
+      "bin_confidence": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5322656035423279,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bin_accuracy": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bin_count": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "containment_rate": 1.0,
+    "intel_yield": 1.0,
+    "false_divert_rate": 0.0,
+    "analyst_override_rate": 0.0,
+    "decoy_dwell_time": 10.0,
+    "detection_evasion_rate": 0.0,
+    "feedback_loop_latency": 0.0,
+    "timestamp": "2026-09-07T20:17:11.371877+00:00"
+  },
+  {
+    "attack_probability": 0.47923994064331055,
+    "decision": "divert",
+    "approved": false,
+    "reliability": {
+      "bin_confidence": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.47923994064331055,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bin_accuracy": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bin_count": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "containment_rate": 0.0,
+    "intel_yield": 1.0,
+    "false_divert_rate": 0.0,
+    "analyst_override_rate": 1.0,
+    "decoy_dwell_time": 10.0,
+    "detection_evasion_rate": 0.0,
+    "feedback_loop_latency": 0.0,
+    "timestamp": "2026-09-07T20:17:37.031376+00:00"
+  },
+  {
+    "attack_probability": 0.5025234818458557,
+    "decision": "divert",
+    "approved": true,
+    "reliability": {
+      "bin_confidence": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5025234818458557,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bin_accuracy": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bin_count": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "containment_rate": 1.0,
+    "intel_yield": 1.0,
+    "false_divert_rate": 0.0,
+    "analyst_override_rate": 0.0,
+    "decoy_dwell_time": 10.0,
+    "detection_evasion_rate": 0.0,
+    "feedback_loop_latency": 0.0,
+    "timestamp": "2026-09-07T20:17:39.907059+00:00"
+  }
+]
