@@ -146,6 +146,13 @@ class GraphEncoder(nn.Module):
 
         return x, edge_index, edge_attr, nodes
 
+    def node_embeddings(self, graph):
+        """Return per-node embeddings aligned with graph.nodes order."""
+        x, edge_index, edge_attr, nodes = self._build_graph_tensors(graph)
+        h = self.encoder.act(self.encoder.conv1(x, edge_index))
+        h = self.encoder.act(self.encoder.conv2(h, edge_index))
+        return h, nodes
+
     def forward(self, graph):
         x, edge_index, edge_attr, _ = self._build_graph_tensors(graph)
     

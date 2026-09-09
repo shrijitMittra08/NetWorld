@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -21,7 +22,6 @@ from explainability import (
 )
 
 
-# Keep these aligned with dashboard/ui_helpers.py.
 STAGE_NAMES = [
     "Reconnaissance",
     "Resource Development",
@@ -41,14 +41,8 @@ STAGE_NAMES = [
 
 
 class ExplanationProbe(nn.Module):
-    """
-    Tiny tabular probe used only for feature attribution.
-    It maps raw feature tensors to a scalar probability.
-    """
-
     def __init__(self, input_dim: int):
         super().__init__()
-
         self.net = nn.Sequential(
             nn.Linear(input_dim, 16),
             nn.ReLU(),
@@ -61,497 +55,180 @@ class ExplanationProbe(nn.Module):
 
 
 class ForecastEngine:
+    """NetWorld inference stack.
+
+    The engine owns the trainable GraphSAGE/GAT encoder, temporal GRU,
+    latent world model and attack/stage/target heads. A checkpoint produced by
+    train_cicids2018.py can be loaded at construction time.
+    """
+
     def __init__(
         self,
         encoder_type: str = "sage",
         num_stages: int = 14,
         rollout_steps: int = 3,
+        checkpoint_path: str | Path | None = None,
     ):
-        self.graph_encoder = GraphEncoder(
-            encoder_type=encoder_type
-        )
-
+        self.graph_encoder = GraphEncoder(encoder_type=encoder_type)
         self.temporal_encoder = TemporalEncoder()
         self.world_model = WorldModel()
-
         self.attack_head = AttackHead()
-
-        self.stage_head = StageHead(
-            num_stages=num_stages
-        )
-
+        self.stage_head = StageHead(num_stages=num_stages)
         self.target_head = TargetAttentionHead()
-
         self.rollout_steps = rollout_steps
+        self.checkpoint_loaded = False
+        self.checkpoint_path: Optional[str] = None
 
-    # ============================================================
-    # GRAPH ENCODING
-    # ============================================================
+        if checkpoint_path is not None:
+            self.load_checkpoint(checkpoint_path, strict=False)
 
-    def _encode_sequence(
+    # ------------------------------------------------------------
+    # Checkpoints
+    # ------------------------------------------------------------
+
+    def load_checkpoint(
         self,
-        graphs: List[Any],
-    ) -> torch.Tensor:
-
-        embeddings = []
-
-        for graph in graphs:
-
-            g = (
-                graph.graph
-                if hasattr(graph, "graph")
-                else graph
-            )
-
-            emb = self.graph_encoder(g)
-
-            embeddings.append(emb)
-
-        sequence = torch.cat(
-            embeddings,
-            dim=0,
-        ).unsqueeze(0)
-
-        return self.temporal_encoder(sequence)
-
-    # ============================================================
-    # STAGE HELPERS
-    # ============================================================
-
-    @staticmethod
-    def _normalise_stage_name(value: Any) -> Optional[str]:
-
-        if value is None:
-            return None
-
-        text = str(value).strip()
-
-        if not text:
-            return None
-
-        text_upper = text.upper()
-
-        aliases = {
-            "RECON": "RECONNAISSANCE",
-            "RECONNAISSANCE": "RECONNAISSANCE",
-
-            "RESOURCE DEVELOPMENT":
-                "RESOURCE DEVELOPMENT",
-
-            "INITIAL ACCESS":
-                "INITIAL ACCESS",
-
-            "EXECUTION":
-                "EXECUTION",
-
-            "PERSISTENCE":
-                "PERSISTENCE",
-
-            "PRIVILEGE ESCALATION":
-                "PRIVILEGE ESCALATION",
-
-            "DEFENSE EVASION":
-                "DEFENSE EVASION",
-
-            "CREDENTIAL ACCESS":
-                "CREDENTIAL ACCESS",
-
-            "DISCOVERY":
-                "DISCOVERY",
-
-            "LATERAL MOVEMENT":
-                "LATERAL MOVEMENT",
-
-            "COLLECTION":
-                "COLLECTION",
-
-            "COMMAND AND CONTROL":
-                "COMMAND & CONTROL",
-
-            "COMMAND & CONTROL":
-                "COMMAND & CONTROL",
-
-            "C2":
-                "COMMAND & CONTROL",
-
-            "EXFILTRATION":
-                "EXFILTRATION",
-
-            "IMPACT":
-                "IMPACT",
-        }
-
-        return aliases.get(
-            text_upper,
-            text,
-        )
-
-    @classmethod
-    def _stage_index(
-        cls,
-        value: Any,
-    ) -> Optional[int]:
-
-        stage = cls._normalise_stage_name(value)
-
-        if stage is None:
-            return None
-
-        try:
-            return STAGE_NAMES.index(stage)
-        except ValueError:
-            return None
-
-    @classmethod
-    def _stage_logits_from_label(
-        cls,
-        stage: Any,
-        num_stages: int,
-    ) -> Optional[List[float]]:
-
-        idx = cls._stage_index(stage)
-
-        if idx is None:
-            return None
-
-        logits = [
-            0.0
-            for _ in range(num_stages)
-        ]
-
-        if idx < num_stages:
-            # Deliberately modest synthetic logits.
-            # This is a fallback representation of the
-            # telemetry label, not a model confidence score.
-            logits[idx] = 1.0
-
-        return logits
-
-    # ============================================================
-    # LABEL FALLBACK
-    # ============================================================
-
-    @staticmethod
-    def _latest_metadata(
-        graphs: List[Any],
-    ) -> Dict[str, Any]:
-
-        if not graphs:
-            return {}
-
-        latest = graphs[-1]
-
-        metadata = getattr(
-            latest,
-            "metadata",
-            None,
-        )
-
-        if isinstance(metadata, dict):
-            return metadata
-
-        return {}
-
-    # ============================================================
-    # TARGET FALLBACK
-    # ============================================================
-
-    @staticmethod
-    def _node_ip_matches(
-        node: Any,
-        ip: str,
+        path: str | Path,
+        strict: bool = False,
     ) -> bool:
-
-        if not ip:
+        path = Path(path)
+        if not path.exists():
             return False
 
-        return ip in str(node)
+        checkpoint = torch.load(path, map_location="cpu")
+        state = checkpoint.get("model_state", checkpoint)
 
-    def _fallback_target_attention(
-        self,
-        graphs: List[Any],
-        window_summaries: Optional[
-            List[Dict[str, Any]]
-        ],
-    ) -> Optional[List[float]]:
+        modules = {
+            "graph_encoder": self.graph_encoder,
+            "temporal_encoder": self.temporal_encoder,
+            "world_model": self.world_model,
+            "attack_head": self.attack_head,
+            "stage_head": self.stage_head,
+            "target_head": self.target_head,
+        }
 
-        if not graphs:
-            return None
+        loaded_any = False
+        for name, module in modules.items():
+            module_state = state.get(name)
+            if module_state is None:
+                continue
+            module.load_state_dict(module_state, strict=strict)
+            loaded_any = True
 
-        latest = graphs[-1]
+        if loaded_any:
+            self.checkpoint_loaded = True
+            self.checkpoint_path = str(path)
+        return loaded_any
 
-        graph = (
-            latest.graph
-            if hasattr(latest, "graph")
-            else latest
+    # ------------------------------------------------------------
+    # Graph encoding
+    # ------------------------------------------------------------
+
+    @staticmethod
+    def _graph_object(snapshot: Any) -> Any:
+        return snapshot.graph if hasattr(snapshot, "graph") else snapshot
+
+    def encode_snapshot(self, snapshot: Any) -> torch.Tensor:
+        return self.graph_encoder(self._graph_object(snapshot))
+
+    def node_embeddings(self, snapshot: Any) -> torch.Tensor:
+        embeddings, _ = self.graph_encoder.node_embeddings(
+            self._graph_object(snapshot)
         )
+        return embeddings
 
+    def node_names(self, snapshot: Any) -> List[str]:
+        graph = self._graph_object(snapshot)
+        return list(graph.nodes())
+
+    def _encode_sequence(self, graphs: List[Any]) -> torch.Tensor:
+        embeddings = [self.encode_snapshot(g) for g in graphs]
+        if not embeddings:
+            raise ValueError("No graphs provided")
+        sequence = torch.cat(embeddings, dim=0).unsqueeze(0)
+        return self.temporal_encoder(sequence)
+
+    def _target_mask(self, snapshot: Any, node_count: int) -> torch.Tensor:
+        """Build a victim-only attention mask aligned with graph node order."""
+        graph = self._graph_object(snapshot)
         nodes = list(graph.nodes())
+        allowed = []
 
-        if not nodes:
-            return None
+        explicit_targets = set(snapshot.metadata.get("target_candidate_nodes") or [])
+        attacker_nodes = set(snapshot.metadata.get("attacker_nodes") or [])
 
-        # --------------------------------------------------------
-        # First choice:
-        # use the destination IP from the latest attack-labelled
-        # telemetry row.
-        # --------------------------------------------------------
+        if explicit_targets:
+            allowed = [n in explicit_targets and n not in attacker_nodes for n in nodes]
+        else:
+            # Never rank an explicitly identified attacker as a victim.
+            allowed = [n not in attacker_nodes for n in nodes]
 
-        target_ip = None
-
-        if window_summaries:
-
-            for row in reversed(window_summaries):
-
-                if not isinstance(row, dict):
-                    continue
-
-                is_attack = row.get(
-                    "label.is_attack",
-                    row.get("label_is_attack", 0),
-                )
-
-                try:
-                    is_attack = int(is_attack)
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    is_attack = 0
-
-                if is_attack <= 0:
-                    continue
-
-                candidate = (
-                    row.get("flow.dst_ip")
-                    or row.get("Dst IP")
-                    or row.get("dst_ip")
-                )
-
-                if candidate:
-                    target_ip = str(candidate)
-                    break
-
-        # --------------------------------------------------------
-        # Second choice:
-        # inspect latest graph nodes for a web/server role.
-        # --------------------------------------------------------
-
-        target_indices = []
-
-        if target_ip:
-
-            for i, node in enumerate(nodes):
-
-                if self._node_ip_matches(
-                    node,
-                    target_ip,
-                ):
-                    target_indices.append(i)
-
-        if not target_indices:
-
-            preferred_keywords = (
-                "server",
-                "web",
-                "database",
-                "dc",
-                "domain",
-            )
-
-            for i, node in enumerate(nodes):
-
-                node_text = str(node).lower()
-
-                if any(
-                    keyword in node_text
-                    for keyword in preferred_keywords
-                ):
-                    target_indices.append(i)
-
-        if not target_indices:
-
-            # Last deterministic fallback:
-            # choose the highest-degree node.
-            degrees = [
-                graph.degree(node)
-                for node in nodes
+        # If metadata is unavailable, fall back to node attributes.
+        if not any(allowed):
+            allowed = [
+                not bool(graph.nodes[n].get("is_attacker", False))
+                for n in nodes
             ]
 
-            if not degrees:
-                return None
+        # Last-resort safety: don't return an all-masked softmax.
+        if not any(allowed):
+            allowed = [True] * node_count
 
-            max_degree = max(degrees)
+        return torch.tensor(allowed[:node_count], dtype=torch.bool)
 
-            target_indices = [
-                i
-                for i, degree in enumerate(degrees)
-                if degree == max_degree
-            ]
+    @staticmethod
+    def _mask_attention(scores: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+        if scores is None or mask is None:
+            return scores
+        mask = mask.to(device=scores.device)
+        if mask.numel() != scores.shape[-1]:
+            mask = mask[:scores.shape[-1]]
+        if not bool(mask.any()):
+            return torch.softmax(scores, dim=-1)
+        masked = scores.masked_fill(~mask.unsqueeze(0), torch.finfo(scores.dtype).min)
+        return torch.softmax(masked, dim=-1)
 
-        attention = [
-            0.0
-            for _ in nodes
-        ]
-
-        weight = (
-            1.0 / len(target_indices)
-            if target_indices
-            else 0.0
-        )
-
-        for index in target_indices:
-            attention[index] = weight
-
-        return attention
-
-    # ============================================================
-    # DIFFERENTIABLE FORECASTING
-    # ============================================================
+    # ------------------------------------------------------------
+    # Training-compatible forward pass
+    # ------------------------------------------------------------
 
     def forecast_tensors(
         self,
         graphs: List[Any],
         current_node_embeddings: torch.Tensor | None = None,
     ) -> Dict[str, Any]:
-
-        if not graphs:
-            raise ValueError(
-                "No graphs provided"
-            )
-
         z = self._encode_sequence(graphs)
-
-        rollout = self.world_model(
+        rollout_states = self.world_model(
             z,
             steps=self.rollout_steps,
         )
 
-        rollout_tensors = []
-
-        for z_step in rollout:
-
-            attack_probability = (
-                self.attack_head(z_step)
+        rollout = []
+        for state in rollout_states:
+            attack_probability = self.attack_head(state)
+            stage_logits = self.stage_head(state)
+            target_attention = (
+                self.target_head(state, current_node_embeddings)
+                if current_node_embeddings is not None
+                else None
             )
-
-            stage_logits = (
-                self.stage_head(z_step)
-            )
-
-            target_attention = None
-
-            if current_node_embeddings is not None:
-
-                target_attention = (
-                    self.target_head(
-                        z_step,
-                        current_node_embeddings,
-                    )
+            if target_attention is not None:
+                target_attention = self._mask_attention(
+                    torch.log(target_attention.clamp_min(1e-12)),
+                    self._target_mask(graphs[-1], target_attention.shape[-1]),
                 )
+            rollout.append({
+                "attack_probability": attack_probability,
+                "stage_logits": stage_logits,
+                "target_attention": target_attention,
+                "latent_state": state,
+            })
 
-            rollout_tensors.append(
-                {
-                    "attack_probability":
-                        attack_probability,
+        return {"rollout": rollout}
 
-                    "stage_logits":
-                        stage_logits,
-
-                    "target_attention":
-                        target_attention,
-
-                    "latent_state":
-                        z_step,
-                }
-            )
-
-        final = rollout_tensors[-1]
-
-        return {
-            "rollout":
-                rollout_tensors,
-
-            "attack_probability":
-                final["attack_probability"],
-
-            "stage_logits":
-                final["stage_logits"],
-
-            "target_attention":
-                final["target_attention"],
-
-            "latent_state":
-                final["latent_state"],
-        }
-
-    # ============================================================
-    # HISTORY FORECAST
-    # ============================================================
-
-    def forecast_history(
-        self,
-        graphs: List[Any],
-    ) -> List[float]:
-
-        if not graphs:
-            raise ValueError(
-                "No graphs provided"
-            )
-
-        embeddings = []
-
-        for graph in graphs:
-
-            g = (
-                graph.graph
-                if hasattr(graph, "graph")
-                else graph
-            )
-
-            embeddings.append(
-                self.graph_encoder(g)
-            )
-
-        sequence = torch.cat(
-            embeddings,
-            dim=0,
-        ).unsqueeze(0)
-
-        temporal_outputs, _ = (
-            self.temporal_encoder.gru(
-                sequence
-            )
-        )
-
-        probabilities: List[float] = []
-
-        with torch.no_grad():
-
-            for hidden in temporal_outputs[0]:
-
-                state = hidden.unsqueeze(0)
-
-                rollout = self.world_model(
-                    state,
-                    steps=self.rollout_steps,
-                )
-
-                probability = self.attack_head(
-                    rollout[-1]
-                )
-
-                probabilities.append(
-                    float(
-                        probability.detach().item()
-                    )
-                )
-
-        return probabilities
-
-    # ============================================================
-    # MAIN FORECAST
-    # ============================================================
+    # ------------------------------------------------------------
+    # Public forecast
+    # ------------------------------------------------------------
 
     def forecast(
         self,
@@ -559,521 +236,165 @@ class ForecastEngine:
         current_node_embeddings: torch.Tensor | None = None,
         feature_tensor: torch.Tensor | None = None,
         feature_names: Optional[List[str]] = None,
-        window_summaries: Optional[
-            List[Dict[str, Any]]
-        ] = None,
+        window_summaries: Optional[List[Dict[str, Any]]] = None,
         detach: bool = True,
     ) -> Dict[str, Any]:
-
         if not graphs:
-            raise ValueError(
-                "No graphs provided"
+            raise ValueError("No graphs provided")
+
+        # Training calls need graph gradients. Dashboard inference is detached.
+        context = torch.enable_grad() if not detach else torch.no_grad()
+        with context:
+            z = self._encode_sequence(graphs)
+            rollout_states = self.world_model(
+                z,
+                steps=self.rollout_steps,
             )
 
-        # --------------------------------------------------------
-        # Encode + rollout
-        # --------------------------------------------------------
-
-        z = self._encode_sequence(graphs)
-
-        rollout = self.world_model(
-            z,
-            steps=self.rollout_steps,
-        )
-
-        forecasts = []
-
-        for step, z_step in enumerate(
-            rollout,
-            start=1,
-        ):
-
-            attack_prob = (
-                self.attack_head(z_step)
-            )
-
-            stage_logits = (
-                self.stage_head(z_step)
-            )
-
-            target_attention = None
-
-            if current_node_embeddings is not None:
-
+            rollout_public = []
+            rollout_tensors = []
+            for step, state in enumerate(rollout_states, start=1):
+                attack_probability = self.attack_head(state)
+                stage_logits = self.stage_head(state)
                 target_attention = (
-                    self.target_head(
-                        z_step,
-                        current_node_embeddings,
-                    )
+                    self.target_head(state, current_node_embeddings)
+                    if current_node_embeddings is not None
+                    else None
                 )
-
-            forecasts.append(
-                {
+                if target_attention is not None:
+                    target_attention = self._mask_attention(
+                        torch.log(target_attention.clamp_min(1e-12)),
+                        self._target_mask(graphs[-1], target_attention.shape[-1]),
+                    )
+                rollout_tensors.append({
+                    "attack_probability": attack_probability,
+                    "stage_logits": stage_logits,
+                    "target_attention": target_attention,
+                    "latent_state": state,
+                })
+                rollout_public.append({
                     "step": step,
-
-                    "latent_state":
-                        (
-                            z_step.detach()
-                            .cpu()
-                            .tolist()
-                            if detach
-                            else z_step
-                        ),
-
-                    "attack_probability":
-                        (
-                            float(
-                                attack_prob.item()
-                            )
-                            if detach
-                            else attack_prob
-                        ),
-
-                    "stage_logits":
-                        (
-                            stage_logits.detach()
-                            .cpu()
-                            .tolist()
-                            if detach
-                            else stage_logits
-                        ),
-
-                    "target_attention":
-                        (
-                            target_attention.detach()
-                            .cpu()
-                            .tolist()
-                            if target_attention is not None
-                            and detach
-                            else target_attention
-                        ),
-                }
-            )
-
-        final = forecasts[-1]
-
-        # --------------------------------------------------------
-        # Differentiable trainer tensors
-        # --------------------------------------------------------
-
-        if not detach:
-
-            final["_attack_probability_tensor"] = (
-                self.attack_head(rollout[-1])
-            )
-
-            final["_stage_logits_tensor"] = (
-                self.stage_head(rollout[-1])
-            )
-
-            final["_latent_tensor"] = rollout[-1]
-
-            if current_node_embeddings is not None:
-
-                final["_target_attention_tensor"] = (
-                    self.target_head(
-                        rollout[-1],
-                        current_node_embeddings,
-                    )
-                )
-
-        # --------------------------------------------------------
-        # Feature attribution
-        # --------------------------------------------------------
-
-        feature_attr = {}
-
-        if feature_tensor is not None:
-
-            feature_tensor = (
-                feature_tensor.float()
-            )
-
-            probe = ExplanationProbe(
-                feature_tensor.shape[-1]
-            ).to(
-                feature_tensor.device
-            )
-
-            feature_attr = (
-                gradient_feature_attribution(
-                    probe,
-                    feature_tensor,
-                    feature_names=feature_names,
-                )
-            )
-
-        # --------------------------------------------------------
-        # Explanations
-        # --------------------------------------------------------
-
-        graph_highlight = (
-            build_graph_highlight()
-        )
-
-        temporal_deltas = (
-            explain_temporal_deltas(
-                window_summaries or []
-            )
-        )
-
-        explanation_forecast = dict(final)
-
-        for key in list(
-            explanation_forecast
-        ):
-            if key.startswith("_"):
-                explanation_forecast.pop(
-                    key,
-                    None,
-                )
-
-        if not detach:
-
-            explanation_forecast[
-                "attack_probability"
-            ] = float(
-                final[
-                    "_attack_probability_tensor"
-                ]
-                .detach()
-                .item()
-            )
-
-            explanation_forecast[
-                "stage_logits"
-            ] = (
-                final[
-                    "_stage_logits_tensor"
-                ]
-                .detach()
-                .cpu()
-                .tolist()
-            )
-
-            if (
-                "_target_attention_tensor"
-                in final
-            ):
-
-                explanation_forecast[
-                    "target_attention"
-                ] = (
-                    final[
-                        "_target_attention_tensor"
-                    ]
-                    .detach()
-                    .cpu()
-                    .tolist()
-                )
-
-        # --------------------------------------------------------
-        # Existing model target attention
-        # --------------------------------------------------------
-
-        target_attention = (
-            final.get(
-                "target_attention"
-            )
-        )
-
-        # --------------------------------------------------------
-        # Fallback target attention
-        #
-        # The dashboard currently does not provide
-        # current_node_embeddings. Therefore use a deterministic
-        # telemetry/graph fallback rather than returning None.
-        # --------------------------------------------------------
-
-        if (
-            target_attention is None
-            and detach
-        ):
-
-            target_attention = (
-                self._fallback_target_attention(
-                    graphs,
-                    window_summaries,
-                )
-            )
-
-            if target_attention is not None:
-
-                final[
-                    "target_attention"
-                ] = target_attention
-
-                explanation_forecast[
-                    "target_attention"
-                ] = target_attention
-
-        # --------------------------------------------------------
-        # Stage prediction
-        # --------------------------------------------------------
-
-        stage_logits_public = (
-            explanation_forecast.get(
-                "stage_logits",
-                [],
-            )
-        )
-
-        stage_values = (
-            stage_logits_public[0]
-            if (
-                stage_logits_public
-                and isinstance(
-                    stage_logits_public[0],
-                    list,
-                )
-            )
-            else stage_logits_public
-        )
-
-        predicted_stage = None
-
-        if stage_values:
-
-            predicted_stage = int(
-                max(
-                    range(
-                        len(stage_values)
+                    "attack_probability": float(attack_probability.detach().item()),
+                    "stage_logits": stage_logits.detach().cpu().tolist(),
+                    "target_attention": (
+                        target_attention.detach().cpu().tolist()
+                        if target_attention is not None else None
                     ),
-                    key=lambda i:
-                        stage_values[i],
-                )
-            )
+                })
 
-        # --------------------------------------------------------
-        # Telemetry label fallback for stage
-        #
-        # Only used when a valid attack-stage label exists.
-        # We do NOT modify attack probability.
-        # --------------------------------------------------------
-
-        metadata = (
-            self._latest_metadata(graphs)
+        final_tensor = rollout_tensors[-1]
+        final_probability = float(
+            final_tensor["attack_probability"].detach().item()
+        )
+        final_stage_logits = (
+            final_tensor["stage_logits"].detach().cpu().tolist()
+        )
+        final_target_attention = (
+            final_tensor["target_attention"].detach().cpu().tolist()
+            if final_tensor["target_attention"] is not None else None
         )
 
-        telemetry_stage = (
-            metadata.get(
-                "attack_stage"
-            )
+        stage_values = final_stage_logits[0] if final_stage_logits and isinstance(final_stage_logits[0], list) else final_stage_logits
+        predicted_stage = (
+            int(max(range(len(stage_values)), key=lambda i: stage_values[i]))
+            if stage_values else None
         )
 
-        telemetry_stage_index = (
-            self._stage_index(
-                telemetry_stage
-            )
-        )
+        target_attention = final_target_attention
+        if target_attention is not None and target_attention and isinstance(target_attention[0], list):
+            target_attention = target_attention[0]
 
-        if (
-            detach
-            and telemetry_stage_index is not None
-        ):
-
-            predicted_stage = (
-                telemetry_stage_index
-            )
-
-            fallback_logits = (
-                self._stage_logits_from_label(
-                    telemetry_stage,
-                    len(STAGE_NAMES),
-                )
-            )
-
-            if fallback_logits is not None:
-
-                # Keep rollout length/schema intact.
-                for forecast_item in forecasts:
-
-                    forecast_item[
-                        "stage_logits"
-                    ] = fallback_logits
-
-                stage_logits_public = (
-                    fallback_logits
-                )
-
-                explanation_forecast[
-                    "stage_logits"
-                ] = fallback_logits
-
-        # --------------------------------------------------------
-        # Target score / likely target
-        # --------------------------------------------------------
-
-        target_score = 0.0
         likely_target = None
+        target_score = 0.0
+        if target_attention:
+            likely_target = int(max(range(len(target_attention)), key=lambda i: target_attention[i]))
+            target_score = float(target_attention[likely_target])
 
-        if target_attention is not None:
-
-            flat = (
-                target_attention[0]
-                if (
-                    isinstance(
-                        target_attention,
-                        list,
-                    )
-                    and target_attention
-                    and isinstance(
-                        target_attention[0],
-                        list,
-                    )
-                )
-                else target_attention
+        # Feature attribution remains explanation-only; it does not alter predictions.
+        feature_attr: Dict[str, float] = {}
+        if feature_tensor is not None and feature_tensor.numel() > 0:
+            probe = ExplanationProbe(feature_tensor.shape[-1])
+            feature_attr = gradient_feature_attribution(
+                probe,
+                feature_tensor.detach().clone(),
+                feature_names=feature_names,
             )
 
-            if flat:
+        node_attention: Dict[str, float] = {}
+        if target_attention is not None:
+            names = self.node_names(graphs[-1])
+            node_attention = {
+                names[i]: float(target_attention[i])
+                for i in range(min(len(names), len(target_attention)))
+            }
 
-                target_score = float(
-                    max(flat)
-                )
+        graph_highlight = build_graph_highlight(
+            node_attention=node_attention
+        )
+        temporal_deltas = explain_temporal_deltas(
+            window_summaries or []
+        )
 
-                likely_target = int(
-                    max(
-                        range(
-                            len(flat)
-                        ),
-                        key=lambda i:
-                            flat[i],
-                    )
-                )
-
-        # --------------------------------------------------------
-        # Build explanation AFTER fallbacks so the dashboard
-        # receives the actual values.
-        # --------------------------------------------------------
+        target_name = None
+        if likely_target is not None:
+            names = self.node_names(graphs[-1])
+            if 0 <= likely_target < len(names):
+                target_name = names[likely_target]
 
         explanation = build_explanation(
-            forecast=explanation_forecast,
+            forecast={
+                "attack_probability": final_probability,
+                "final_attack_probability": final_probability,
+                "predicted_stage": predicted_stage,
+                "stage": STAGE_NAMES[predicted_stage] if predicted_stage is not None and predicted_stage < len(STAGE_NAMES) else "unknown",
+                "likely_target": likely_target,
+                "target": target_name or "unknown",
+            },
             feature_attribution=feature_attr,
             graph_highlight=graph_highlight,
             temporal_deltas=temporal_deltas,
             attention_weights={
-                "target_attention":
-                    target_attention,
+                "target_attention": target_attention,
             },
         )
 
-        # --------------------------------------------------------
-        # Public result
-        # --------------------------------------------------------
-
-        result = {
-            "rollout":
-                forecasts,
-
-            "final_attack_probability":
-                (
-                    float(
-                        final[
-                            "_attack_probability_tensor"
-                        ]
-                        .detach()
-                        .item()
-                    )
-                    if not detach
-                    else final[
-                        "attack_probability"
-                    ]
-                ),
-
-            "final_stage_logits":
-                (
-                    final[
-                        "_stage_logits_tensor"
-                    ]
-                    .detach()
-                    .cpu()
-                    .tolist()
-                    if not detach
-                    else stage_logits_public
-                ),
-
-            "final_target_attention":
-                (
-                    final[
-                        "_target_attention_tensor"
-                    ]
-                    .detach()
-                    .cpu()
-                    .tolist()
-                    if (
-                        not detach
-                        and "_target_attention_tensor"
-                        in final
-                    )
-                    else target_attention
-                ),
-
-            "explanation":
-                explanation,
-
-            # Backward-compatible aliases.
-            "attack_probability":
-                (
-                    float(
-                        final[
-                            "_attack_probability_tensor"
-                        ]
-                        .detach()
-                        .item()
-                    )
-                    if not detach
-                    else final[
-                        "attack_probability"
-                    ]
-                ),
-
-            "stage_logits":
-                stage_logits_public,
-
-            "target_score":
-                target_score,
-
-            "predicted_stage":
-                predicted_stage,
-
-            "likely_target":
-                likely_target,
-
-            "_rollout_tensors":
-                (
-                    [
-                        {
-                            "attack_probability":
-                                self.attack_head(
-                                    z_step
-                                ),
-
-                            "stage_logits":
-                                self.stage_head(
-                                    z_step
-                                ),
-
-                            "target_attention":
-                                (
-                                    self.target_head(
-                                        z_step,
-                                        current_node_embeddings,
-                                    )
-                                    if (
-                                        current_node_embeddings
-                                        is not None
-                                    )
-                                    else None
-                                ),
-
-                            "latent_state":
-                                z_step,
-                        }
-                        for z_step in rollout
-                    ]
-                    if not detach
-                    else None
-                ),
+        return {
+            "rollout": rollout_public,
+            "final_attack_probability": final_probability,
+            "final_stage_logits": final_stage_logits,
+            "final_target_attention": final_target_attention,
+            "attack_probability": final_probability,
+            "stage_logits": final_stage_logits,
+            "predicted_stage": predicted_stage,
+            "likely_target": likely_target,
+            "target_score": target_score,
+            "explanation": explanation,
+            "_rollout_tensors": rollout_tensors if not detach else None,
         }
 
-        return result
+    # ------------------------------------------------------------
+    # History evaluation
+    # ------------------------------------------------------------
+
+    def forecast_history(self, graphs: List[Any]) -> List[float]:
+        """Score every observed snapshot in one temporal pass."""
+        if not graphs:
+            return []
+
+        self.graph_encoder.eval()
+        self.temporal_encoder.eval()
+        self.world_model.eval()
+        self.attack_head.eval()
+
+        with torch.no_grad():
+            encoded = [self.encode_snapshot(g) for g in graphs]
+            sequence = torch.cat(encoded, dim=0).unsqueeze(0)
+            temporal_outputs, _ = self.temporal_encoder.gru(sequence)
+
+            probabilities: List[float] = []
+            for hidden in temporal_outputs[0]:
+                z = hidden.unsqueeze(0)
+                future = self.world_model(z, steps=self.rollout_steps)[-1]
+                probabilities.append(float(self.attack_head(future).item()))
+            return probabilities
+

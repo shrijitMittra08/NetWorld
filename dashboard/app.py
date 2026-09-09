@@ -24,7 +24,7 @@ from dashboard.ui_helpers import inject_theme, show_hero, show_flow, show_metric
 
 st.set_page_config(page_title="NetWorld + Deceptra", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
-show_hero("Forecast the attack. Deceive it. Learn from it.", "A proactive SOC workflow built around temporal network forecasting and closed-loop deception.", "Interactive upload")
+show_hero("Forecast the attack. Deceive it. Learn from it.", "A proactive SOC workflow built around temporal network forecasting and closed-loop deception.", "Trained model" if (ROOT / "models" / "networld_cicids2018.pt").exists() else "Model checkpoint missing")
 show_flow()
 
 st.sidebar.header("Scenario controls")
@@ -42,9 +42,15 @@ capture = SessionCapture()
 decoy_manager = DecoyManager()
 @st.cache_resource
 def get_forecast_engine():
-    return ForecastEngine(rollout_steps=3)
+    checkpoint = ROOT / "models" / "networld_cicids2018.pt"
+    return ForecastEngine(rollout_steps=3, checkpoint_path=checkpoint)
 
 forecast_engine = get_forecast_engine()
+
+if forecast_engine.checkpoint_loaded:
+    st.sidebar.success("Trained CIC-IDS2018 model loaded")
+else:
+    st.sidebar.warning("No trained checkpoint found — run train_cicids2018.py first")
 
 if uploaded is None:
     st.markdown("### How the demo reads")
@@ -120,8 +126,11 @@ window_summaries = (
     )
 )
 
+current_node_embeddings = forecast_engine.node_embeddings(latest)
+
 forecast = forecast_engine.forecast(
     sequence.snapshots,
+    current_node_embeddings=current_node_embeddings,
     feature_tensor=feature_tensor,
     feature_names=available,
     window_summaries=window_summaries,
@@ -149,7 +158,10 @@ if target_attention and latest is not None:
 st.subheader("Current threat picture")
 c1,c2,c3 = st.columns([1.25,1,1])
 with c1:
-    show_forecast_summary(forecast, node_names := (list(latest.graph.nodes())[forecast.get("likely_target")] if forecast.get("likely_target") is not None and forecast.get("likely_target") < latest.graph.number_of_nodes() else None))
+    nodes = list(latest.graph.nodes())
+    target_index = forecast.get("likely_target")
+    target_name = nodes[int(target_index)] if target_index is not None and 0 <= int(target_index) < len(nodes) else None
+    show_forecast_summary(forecast, target_name=target_name)
 with c2:
     st.markdown("**Predicted attack path**")
     st.metric("Early warning", f"{len(forecast.get('rollout', []))} steps")
@@ -175,6 +187,12 @@ with right:
     st.subheader("Likely target")
     if target_attention is not None:
         show_target_ranking(target_attention, list(latest.graph.nodes()))
+        attacker_nodes = latest.metadata.get("attacker_nodes", [])
+        target_nodes = latest.metadata.get("target_candidate_nodes", [])
+        if attacker_nodes:
+            st.caption("Attacker/source nodes are excluded from victim target ranking.")
+        if target_nodes:
+            st.caption(f"Candidate victim nodes: {len(target_nodes)}")
     else:
         st.caption("Target attention is unavailable for this run.")
 
@@ -187,7 +205,12 @@ if node_attention:
     show_attention_details(node_attention, top_k=5)
 
 asset_criticality = int(windowed_df["host.asset_criticality"].fillna(1).iloc[-1]) if "host.asset_criticality" in windowed_df.columns else 1
-stage_confidence = .7
+stage_values = forecast.get("final_stage_logits", [])
+stage_values = stage_values[0] if stage_values and isinstance(stage_values[0], list) else stage_values
+if stage_values:
+    stage_confidence = float(torch.softmax(torch.tensor(stage_values, dtype=torch.float32), dim=0).max().item())
+else:
+    stage_confidence = 0.0
 soc_load = .3
 decoy_capacity = 1.0
 decision = policy.decide({"attack_probability":forecast["final_attack_probability"],"stage_logits":forecast["final_stage_logits"],"target_score":forecast.get("target_score",0.0),"predicted_stage":forecast.get("predicted_stage")}, asset_criticality=asset_criticality, stage_confidence=stage_confidence, soc_load=soc_load, decoy_capacity=decoy_capacity, human_mode=human_mode)
